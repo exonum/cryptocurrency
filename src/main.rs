@@ -120,7 +120,7 @@ impl Transaction for TxCreateWallet {
 
     fn execute(&self, view: &mut Fork) {
         let mut schema = CurrencySchema { view };
-        if let None = schema.wallet(self.pub_key()) {
+        if schema.wallet(self.pub_key()).is_none() {
             let wallet = Wallet::new(self.pub_key(), self.name(), INIT_BALANCE);
             println!("Create the wallet: {:?}", wallet);
             schema.wallets().put(self.pub_key(), wallet)
@@ -189,7 +189,7 @@ impl Api for CryptocurrencyApi {
                     let transaction: Box<Transaction> = transaction.into();
                     let tx_hash = transaction.hash();
                     self_.channel.send(transaction).map_err(
-                        |e| ApiError::Events(e),
+                        ApiError::Events,
                     )?;
                     let json = TransactionResponse { tx_hash };
                     self_.ok_response(&serde_json::to_value(&json).unwrap())
