@@ -1,15 +1,30 @@
+// Copyright 2017 The Exonum Team
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 extern crate serde;
 extern crate serde_json;
-#[macro_use] extern crate serde_derive;
-#[macro_use] extern crate exonum;
+#[macro_use]
+extern crate serde_derive;
+#[macro_use]
+extern crate exonum;
 extern crate router;
 extern crate bodyparser;
 extern crate iron;
 
-use exonum::blockchain::{self, Blockchain, Service, GenesisConfig,
-                         ValidatorKeys, Transaction, ApiContext};
-use exonum::node::{Node, NodeConfig, NodeApiConfig, TransactionSend,
-                   TxSender, NodeChannel};
+use exonum::blockchain::{self, Blockchain, Service, GenesisConfig, ValidatorKeys, Transaction,
+                         ApiContext};
+use exonum::node::{Node, NodeConfig, NodeApiConfig, TransactionSend, TxSender, NodeChannel};
 use exonum::messages::{RawTransaction, FromRaw, Message};
 use exonum::storage::{Fork, MemoryDB, MapIndex};
 use exonum::crypto::{PublicKey, Hash};
@@ -173,7 +188,9 @@ impl Api for CryptocurrencyApi {
                 Ok(Some(transaction)) => {
                     let transaction: Box<Transaction> = transaction.into();
                     let tx_hash = transaction.hash();
-                    self_.channel.send(transaction).map_err(|e| ApiError::Events(e))?;
+                    self_.channel.send(transaction).map_err(
+                        ApiError::Events,
+                    )?;
                     let json = TransactionResponse { tx_hash };
                     self_.ok_response(&serde_json::to_value(&json).unwrap())
                 }
@@ -191,26 +208,30 @@ impl Api for CryptocurrencyApi {
 struct CurrencyService;
 
 impl Service for CurrencyService {
-    fn service_name(&self) -> &'static str { "cryptocurrency" }
+    fn service_name(&self) -> &'static str {
+        "cryptocurrency"
+    }
 
-    fn service_id(&self) -> u16 { SERVICE_ID }
+    fn service_id(&self) -> u16 {
+        SERVICE_ID
+    }
 
     fn tx_from_raw(&self, raw: RawTransaction) -> Result<Box<Transaction>, encoding::Error> {
         let trans: Box<Transaction> = match raw.message_type() {
             TX_TRANSFER_ID => Box::new(TxTransfer::from_raw(raw)?),
             TX_CREATE_WALLET_ID => Box::new(TxCreateWallet::from_raw(raw)?),
             _ => {
-                return Err(encoding::Error::IncorrectMessageType { message_type: raw.message_type() });
-            },
+                return Err(encoding::Error::IncorrectMessageType {
+                    message_type: raw.message_type(),
+                });
+            }
         };
         Ok(trans)
     }
 
     fn public_api_handler(&self, ctx: &ApiContext) -> Option<Box<Handler>> {
         let mut router = Router::new();
-        let api = CryptocurrencyApi {
-            channel: ctx.node_channel().clone(),
-        };
+        let api = CryptocurrencyApi { channel: ctx.node_channel().clone() };
         api.wire(&mut router);
         Some(Box::new(router))
     }
@@ -223,9 +244,7 @@ fn main() {
 
     println!("Creating in-memory database...");
     let db = MemoryDB::new();
-    let services: Vec<Box<Service>> = vec![
-        Box::new(CurrencyService),
-    ];
+    let services: Vec<Box<Service>> = vec![Box::new(CurrencyService)];
     let blockchain = Blockchain::new(Box::new(db), services);
 
     let (consensus_public_key, consensus_secret_key) = exonum::crypto::gen_keypair();
