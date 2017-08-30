@@ -20,6 +20,7 @@ extern crate serde_derive;
 extern crate exonum;
 extern crate router;
 extern crate bodyparser;
+extern crate params;
 extern crate iron;
 
 use exonum::blockchain::{self, Blockchain, Service, GenesisConfig, ValidatorKeys, Transaction,
@@ -27,12 +28,13 @@ use exonum::blockchain::{self, Blockchain, Service, GenesisConfig, ValidatorKeys
 use exonum::node::{Node, NodeConfig, NodeApiConfig, TransactionSend, ApiSender, NodeChannel};
 use exonum::messages::{RawTransaction, FromRaw, Message};
 use exonum::storage::{Fork, MemoryDB, MapIndex};
-use exonum::crypto::{PublicKey, Hash};
+use exonum::crypto::{PublicKey, Hash, HexValue};
 use exonum::encoding::{self, Field};
 use exonum::api::{Api, ApiError};
 use iron::prelude::*;
 use iron::Handler;
 use router::Router;
+use params::{Params, Value};
 
 // // // // // // // // // // CONSTANTS // // // // // // // // // //
 
@@ -155,6 +157,7 @@ impl Transaction for TxTransfer {
 
 #[derive(Clone)]
 struct CryptocurrencyApi {
+    blockchain: Blockchain,
     channel: ApiSender<NodeChannel>,
 }
 
@@ -196,8 +199,36 @@ impl Api for CryptocurrencyApi {
                 Err(e) => Err(ApiError::IncorrectRequest(Box::new(e)))?,
             }
         };
-        let route_post = "/v1/wallets/transaction";
-        router.post(&route_post, transaction, "transaction");
+        router.post("/v1/wallets/transaction", transaction, "transaction");
+
+        #[derive(Serialize, Deserialize)]
+        struct InfoResponse {
+            name: String,
+            balance: u64,
+        }
+
+        let self_ = self.clone();
+        let info = move |req: &mut Request| -> IronResult<Response> {
+            let map = req.get_ref::<Params>().unwrap();
+            match map.find(&["pub_key"]) {
+                Some(&Value::String(ref value)) => {
+                    let key = PublicKey::from_hex(value).map_err(ApiError::from)?;
+                    let mut fork = self_.blockchain.fork();
+                    let mut schema = CurrencySchema { view: &mut fork };
+                    let wallet = schema.wallet(&key)
+                        .ok_or(ApiError::IncorrectRequest("Wallet not found".into()))?;
+                    let json = InfoResponse {
+                        name: wallet.name().to_owned(),
+                        balance: wallet.balance(),
+                    };
+                    self_.ok_response(&serde_json::to_value(&json).unwrap())
+                },
+                _ => {
+                   Err(ApiError::IncorrectRequest("No pub_key".into()))?
+                },
+            }
+        };
+        router.get("/v1/wallets/info", info, "info");
     }
 }
 
@@ -229,7 +260,10 @@ impl Service for CurrencyService {
 
     fn public_api_handler(&self, ctx: &ApiContext) -> Option<Box<Handler>> {
         let mut router = Router::new();
-        let api = CryptocurrencyApi { channel: ctx.node_channel().clone() };
+        let api = CryptocurrencyApi {
+            blockchain: ctx.blockchain().clone(),
+            channel: ctx.node_channel().clone(),
+        };
         api.wire(&mut router);
         Some(Box::new(router))
     }
