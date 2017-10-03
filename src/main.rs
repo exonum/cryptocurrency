@@ -276,8 +276,10 @@ impl Api for CryptocurrencyApi {
         // Gets status of the wallet corresponding to the public key.
         let self_ = self.clone();
         let wallet_info = move |req: &mut Request| -> IronResult<Response> {
-            let path = req.url.path();
-            let wallet_key = path.last().unwrap();
+            let wallet_key = req.extensions.get::<Router>()
+                                .expect("router::Params not in request extensions")
+                                .find("pub_key")
+                                .ok_or(ApiError::IncorrectRequest("Missing public key".into()))?;
             let public_key = PublicKey::from_hex(wallet_key).map_err(ApiError::FromHex)?;
             
             let wallet_view = self_.get_wallet_view(public_key);
