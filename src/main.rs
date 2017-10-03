@@ -231,30 +231,30 @@ impl CryptocurrencyApi {
     }
 }
 
-/// Add an enum which joins transactions of both types to simplify request
-/// processing.
-#[serde(untagged)]
-#[derive(Clone, Serialize, Deserialize)]
-enum TransactionRequest {
-    CreateWallet(TxCreateWallet),
-    Transfer(TxTransfer),
+/// The structure returned by the REST API.
+#[derive(Serialize)]
+struct TxInfo {
+    tx_hash: Hash,
 }
 
-/// Implement a trait for the enum for deserialized `TransactionRequest`s
-/// to fit into the node channel.
-impl Into<Box<Transaction>> for TransactionRequest {
-    fn into(self) -> Box<Transaction> {
-        match self {
-            TransactionRequest::CreateWallet(trans) => Box::new(trans),
-            TransactionRequest::Transfer(trans) => Box::new(trans),
+impl CryptocurrencyApi {
+    fn process_transaction<T>(&self, req: &mut Request) -> IronResult<Response>
+    where
+        T: Transaction + Clone,
+        for<'a> T: serde::Deserialize<'a>
+    {
+        match req.get::<bodyparser::Struct<T>>() {
+            Ok(Some(transaction)) => {
+                let transaction: Box<Transaction> = Box::new(transaction);
+                let tx_hash = transaction.hash();
+                self.channel.send(transaction).map_err(ApiError::Events)?;
+                let json = TxInfo { tx_hash };
+                self.ok_response(&serde_json::to_value(&json).unwrap())
+            }
+            Ok(None) => Err(ApiError::IncorrectRequest("Empty request body".into()))?,
+            Err(e) => Err(ApiError::IncorrectRequest(Box::new(e)))?,
         }
     }
-}
-
-/// The structure returned by the REST API.
-#[derive(Serialize, Deserialize)]
-struct TransactionResponse {
-    tx_hash: Hash,
 }
 
 /// Implement the `Api` trait.
@@ -264,18 +264,13 @@ struct TransactionResponse {
 impl Api for CryptocurrencyApi {
     fn wire(&self, router: &mut Router) {
         let self_ = self.clone();
-        let transaction = move |req: &mut Request| -> IronResult<Response> {
-            match req.get::<bodyparser::Struct<TransactionRequest>>() {
-                Ok(Some(transaction)) => {
-                    let transaction: Box<Transaction> = transaction.into();
-                    let tx_hash = transaction.hash();
-                    self_.channel.send(transaction).map_err(ApiError::Events)?;
-                    let json = TransactionResponse { tx_hash };
-                    self_.ok_response(&serde_json::to_value(&json).unwrap())
-                }
-                Ok(None) => Err(ApiError::IncorrectRequest("Empty request body".into()))?,
-                Err(e) => Err(ApiError::IncorrectRequest(Box::new(e)))?,
-            }
+        let tx_create = move |req: &mut Request| -> IronResult<Response> {
+            self_.process_transaction::<TxCreateWallet>(req)
+        };
+        
+        let self_ = self.clone();
+        let tx_transfer = move |req: &mut Request| -> IronResult<Response> {
+            self_.process_transaction::<TxTransfer>(req)
         };
         
         // Gets status of the wallet corresponding to the public key.
@@ -295,7 +290,8 @@ impl Api for CryptocurrencyApi {
         };
 
         // Bind the transaction handler to a specific route.
-        router.post("/v1/wallets/transaction", transaction, "transaction");
+        router.post("/v1/wallets", tx_create, "tx_create");
+        router.post("/v1/wallets/transfer", tx_transfer, "tx_transfer");
         router.get("/v1/wallet/:pub_key", wallet_info, "wallet_info");
     }
 }
