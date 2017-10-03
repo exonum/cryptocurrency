@@ -26,17 +26,21 @@ extern crate iron;
 
 // Import necessary types from crates.
 
-use exonum::blockchain::{self, Blockchain, Service, GenesisConfig, ValidatorKeys, Transaction,
-                         ApiContext};
+use exonum::blockchain::{self, Blockchain, Service, GenesisConfig, ValidatorKeys,
+                         Transaction, ApiContext};
 use exonum::node::{Node, NodeConfig, NodeApiConfig, TransactionSend, ApiSender, NodeChannel};
 use exonum::messages::{RawTransaction, FromRaw, Message};
-use exonum::storage::{Fork, MemoryDB, MapIndex};
+use exonum::storage::{Snapshot, Fork, MemoryDB, ProofMapIndex};
 use exonum::crypto::{PublicKey, Hash, HexValue};
 use exonum::encoding;
 use exonum::api::{Api, ApiError};
 use iron::prelude::*;
 use iron::Handler;
 use router::Router;
+
+use self::api::{BlockWithState, MapView};
+
+mod api;
 
 // // // // // // // // // // CONSTANTS // // // // // // // // // //
 
@@ -89,25 +93,44 @@ impl Wallet {
 
 /// Create schema of the key-value storage implemented by `MemoryDB`. In the
 /// present case a `Fork` of the database is used.
-pub struct CurrencySchema<'a> {
-    view: &'a mut Fork,
+pub struct CurrencySchema<T> {
+    view: T,
 }
 
-/// Declare layout of the data. Use an instance of [`MapIndex`][2]
-/// [2]: https://github.com/exonum/exonum-doc/blob/master/src/architecture/storage.md#mapindex
+impl<T: AsRef<Snapshot>> CurrencySchema<T> {
+    pub fn ro(snapshot: T) -> Self {
+        CurrencySchema { view: snapshot }
+    }
+    
+    pub fn wallets(&self) -> ProofMapIndex<&Snapshot, PublicKey, Wallet> {
+        let prefix = blockchain::gen_prefix(SERVICE_ID, 0, &());
+        let view: &Snapshot = self.view.as_ref();
+        ProofMapIndex::new(prefix, view)
+    }
+    
+    pub fn wallet(&self, key: &PublicKey) -> Option<Wallet> {
+        return self.wallets().get(key)
+    }
+    
+    pub fn state_hash(&self) -> Vec<Hash> {
+        return vec![self.wallets().root_hash()]
+    }
+}
+
+/// Declare layout of the data. Use an instance of [`ProofMapIndex`][2]
+/// [2]: https://github.com/exonum/exonum-doc/blob/master/src/architecture/storage.md#proofmapindex
 /// to keep wallets in storage. Index values are serialized `Wallet` structs.
 ///
 /// Isolate the wallets map into a separate entity by adding a unique prefix,
-/// i.e. the first argument to the `MapIndex::new` call.
-impl<'a> CurrencySchema<'a> {
-    pub fn wallets(&mut self) -> MapIndex<&mut Fork, PublicKey, Wallet> {
-        let prefix = blockchain::gen_prefix(SERVICE_ID, 0, &());
-        MapIndex::new(prefix, self.view)
+/// i.e. the first argument to the `ProofMapIndex::new` call.
+impl<'a> CurrencySchema<&'a mut Fork> {
+    pub fn rw(fork: &'a mut Fork) -> Self {
+        CurrencySchema { view: fork }
     }
-
-    /// Get a separate wallet from the storage.
-    pub fn wallet(&mut self, pub_key: &PublicKey) -> Option<Wallet> {
-        self.wallets().get(pub_key)
+    
+    pub fn wallets_mut(&mut self) -> ProofMapIndex<&mut Fork, PublicKey, Wallet> {
+        let prefix = blockchain::gen_prefix(SERVICE_ID, 0, &());
+        ProofMapIndex::new(prefix, self.view)
     }
 }
 
@@ -151,11 +174,11 @@ impl Transaction for TxCreateWallet {
 
     /// Apply logic to the storage when executing the transaction.
     fn execute(&self, view: &mut Fork) {
-        let mut schema = CurrencySchema { view };
+        let mut schema = CurrencySchema::rw(view);
         if schema.wallet(self.pub_key()).is_none() {
             let wallet = Wallet::new(self.pub_key(), self.name(), INIT_BALANCE);
             println!("Create the wallet: {:?}", wallet);
-            schema.wallets().put(self.pub_key(), wallet)
+            schema.wallets_mut().put(self.pub_key(), wallet)
         }
     }
 }
@@ -170,16 +193,19 @@ impl Transaction for TxTransfer {
     /// Retrieve two wallets to apply the transfer. Check the sender's
     /// balance and apply changes to the balances of the wallets.
     fn execute(&self, view: &mut Fork) {
-        let mut schema = CurrencySchema { view };
+        let mut schema = CurrencySchema::rw(view);
+        
         let sender = schema.wallet(self.from());
         let receiver = schema.wallet(self.to());
+        
         if let (Some(sender), Some(receiver)) = (sender, receiver) {
             let amount = self.amount();
+            
             if sender.balance() >= amount {
                 let sender = sender.decrease(amount);
                 let receiver = receiver.increase(amount);
                 println!("Transfer between wallets: {:?} => {:?}", sender, receiver);
-                let mut wallets = schema.wallets();
+                let mut wallets = schema.wallets_mut();
                 wallets.put(self.from(), sender);
                 wallets.put(self.to(), receiver);
             }
@@ -198,22 +224,10 @@ struct CryptocurrencyApi {
 
 /// Shortcut to get data on wallets.
 impl CryptocurrencyApi {
-    fn get_wallet(&self, pub_key: &PublicKey) -> Option<Wallet> {
-        let mut view = self.blockchain.fork();
-        let mut schema = CurrencySchema { view: &mut view };
-        schema.wallet(pub_key)
-    }
-
-    fn get_wallets(&self) -> Option<Vec<Wallet>> {
-        let mut view = self.blockchain.fork();
-        let mut schema = CurrencySchema { view: &mut view };
-        let idx = schema.wallets();
-        let wallets: Vec<Wallet> = idx.values().collect();
-        if wallets.is_empty() {
-            None
-        } else {
-            Some(wallets)
-        }
+    fn get_wallet_view(&self, pub_key: PublicKey) -> MapView<PublicKey, Wallet> {
+        let snapshot = self.blockchain.snapshot();
+        let schema = CurrencySchema::ro(&snapshot);
+        MapView::new(&schema.wallets(), pub_key)
     }
 }
 
@@ -263,36 +277,25 @@ impl Api for CryptocurrencyApi {
                 Err(e) => Err(ApiError::IncorrectRequest(Box::new(e)))?,
             }
         };
-
-        // Gets status of all wallets.
-        let self_ = self.clone();
-        let wallets_info = move |_: &mut Request| -> IronResult<Response> {
-            if let Some(wallets) = self_.get_wallets() {
-                self_.ok_response(&serde_json::to_value(wallets).unwrap())
-            } else {
-                self_.not_found_response(
-                    &serde_json::to_value("Wallets database is empty")
-                        .unwrap(),
-                )
-            }
-        };
-
+        
         // Gets status of the wallet corresponding to the public key.
         let self_ = self.clone();
         let wallet_info = move |req: &mut Request| -> IronResult<Response> {
             let path = req.url.path();
             let wallet_key = path.last().unwrap();
             let public_key = PublicKey::from_hex(wallet_key).map_err(ApiError::FromHex)?;
-            if let Some(wallet) = self_.get_wallet(&public_key) {
-                self_.ok_response(&serde_json::to_value(wallet).unwrap())
-            } else {
-                self_.not_found_response(&serde_json::to_value("Wallet not found").unwrap())
-            }
+            
+            let wallet_view = self_.get_wallet_view(public_key);
+            let block = BlockWithState::new(self_.blockchain.snapshot(),
+                                               SERVICE_ID,
+                                               0,
+                                               wallet_view);
+            
+            self_.ok_response(&serde_json::to_value(block).unwrap())
         };
 
         // Bind the transaction handler to a specific route.
         router.post("/v1/wallets/transaction", transaction, "transaction");
-        router.get("/v1/wallets", wallets_info, "wallets_info");
         router.get("/v1/wallet/:pub_key", wallet_info, "wallet_info");
     }
 }
@@ -310,6 +313,11 @@ impl Service for CurrencyService {
 
     fn service_id(&self) -> u16 {
         SERVICE_ID
+    }
+    
+    fn state_hash(&self, view: &Snapshot) -> Vec<Hash> {
+        let schema = CurrencySchema::ro(view);
+        schema.state_hash()
     }
 
     /// Implement a method to deserialize transactions coming to the node.
