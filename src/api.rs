@@ -45,14 +45,14 @@ where
 {
     pub fn new<T: AsRef<Snapshot>>(table: &ProofMapIndex<T, K, V>, key: K) -> Self {
         let val = table.get(&key);
-        
+
         MapView {
             proof: table.get_proof(&key),
             entries: if let Some(val) = val {
                 vec![KeyValuePair::new(key, val)]
             } else {
                 vec![]
-            }
+            },
         }
     }
 }
@@ -64,22 +64,29 @@ pub struct BlockWithState<T: Serialize> {
 }
 
 impl<T: Serialize> BlockWithState<T> {
-    pub fn new<S: AsRef<Snapshot>>(snapshot: S, service_id: u16, table_id: usize, table_view: T) -> Self {
-        let table_key = StateTableKey { service_id, table_id };
+    pub fn new<S: AsRef<Snapshot>>(
+        snapshot: S,
+        service_id: u16,
+        table_id: usize,
+        table_view: T,
+    ) -> Self {
+        let table_key = StateTableKey {
+            service_id,
+            table_id,
+        };
         let schema = blockchain::Schema::new(&snapshot);
         let max_height = schema.block_hashes_by_height().len() - 1;
         let block_proof = schema.block_and_precommits(Height(max_height)).unwrap();
-        
-        let proof_to_table =
-            schema.get_proof_to_service_table(service_id, table_id);
-        
+
+        let proof_to_table = schema.get_proof_to_service_table(service_id, table_id);
+
         BlockWithState {
             block: block_proof.block,
             precommits: block_proof.precommits,
             state: StateView {
                 proof: proof_to_table,
-                entries: vec![KeyValuePair::new(table_key, table_view)]
-            }
+                entries: vec![KeyValuePair::new(table_key, table_view)],
+            },
         }
     }
 }
@@ -89,8 +96,14 @@ impl<T: Serialize> Serialize for BlockWithState<T> {
         let mut obj = serializer.serialize_struct("BlockWithState", 8)?;
         obj.serialize_field("height", &self.block.height())?;
         obj.serialize_field("prev_hash", &self.block.prev_hash())?;
-        obj.serialize_field("schema_version", &self.block.schema_version())?;
-        obj.serialize_field("proposer_id", &self.block.proposer_id())?;
+        obj.serialize_field(
+            "schema_version",
+            &self.block.schema_version(),
+        )?;
+        obj.serialize_field(
+            "proposer_id",
+            &self.block.proposer_id(),
+        )?;
         obj.serialize_field("tx_count", &self.block.tx_count())?;
         obj.serialize_field("tx_hash", &self.block.tx_hash())?;
         obj.serialize_field("precommits", &self.precommits)?;

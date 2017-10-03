@@ -26,8 +26,8 @@ extern crate iron;
 
 // Import necessary types from crates.
 
-use exonum::blockchain::{self, Blockchain, Service, GenesisConfig, ValidatorKeys,
-                         Transaction, ApiContext};
+use exonum::blockchain::{self, Blockchain, Service, GenesisConfig, ValidatorKeys, Transaction,
+                         ApiContext};
 use exonum::node::{Node, NodeConfig, NodeApiConfig, TransactionSend, ApiSender, NodeChannel};
 use exonum::messages::{RawTransaction, FromRaw, Message};
 use exonum::storage::{Snapshot, Fork, MemoryDB, ProofMapIndex};
@@ -101,19 +101,19 @@ impl<T: AsRef<Snapshot>> CurrencySchema<T> {
     pub fn ro(snapshot: T) -> Self {
         CurrencySchema { view: snapshot }
     }
-    
+
     pub fn wallets(&self) -> ProofMapIndex<&Snapshot, PublicKey, Wallet> {
         let prefix = blockchain::gen_prefix(SERVICE_ID, 0, &());
         let view: &Snapshot = self.view.as_ref();
         ProofMapIndex::new(prefix, view)
     }
-    
+
     pub fn wallet(&self, key: &PublicKey) -> Option<Wallet> {
-        return self.wallets().get(key)
+        return self.wallets().get(key);
     }
-    
+
     pub fn state_hash(&self) -> Vec<Hash> {
-        return vec![self.wallets().root_hash()]
+        return vec![self.wallets().root_hash()];
     }
 }
 
@@ -127,7 +127,7 @@ impl<'a> CurrencySchema<&'a mut Fork> {
     pub fn rw(fork: &'a mut Fork) -> Self {
         CurrencySchema { view: fork }
     }
-    
+
     pub fn wallets_mut(&mut self) -> ProofMapIndex<&mut Fork, PublicKey, Wallet> {
         let prefix = blockchain::gen_prefix(SERVICE_ID, 0, &());
         ProofMapIndex::new(prefix, self.view)
@@ -194,13 +194,13 @@ impl Transaction for TxTransfer {
     /// balance and apply changes to the balances of the wallets.
     fn execute(&self, view: &mut Fork) {
         let mut schema = CurrencySchema::rw(view);
-        
+
         let sender = schema.wallet(self.from());
         let receiver = schema.wallet(self.to());
-        
+
         if let (Some(sender), Some(receiver)) = (sender, receiver) {
             let amount = self.amount();
-            
+
             if sender.balance() >= amount {
                 let sender = sender.decrease(amount);
                 let receiver = receiver.increase(amount);
@@ -241,7 +241,7 @@ impl CryptocurrencyApi {
     fn process_transaction<T>(&self, req: &mut Request) -> IronResult<Response>
     where
         T: Transaction + Clone,
-        for<'a> T: serde::Deserialize<'a>
+        for<'a> T: serde::Deserialize<'a>,
     {
         match req.get::<bodyparser::Struct<T>>() {
             Ok(Some(transaction)) => {
@@ -267,27 +267,26 @@ impl Api for CryptocurrencyApi {
         let tx_create = move |req: &mut Request| -> IronResult<Response> {
             self_.process_transaction::<TxCreateWallet>(req)
         };
-        
+
         let self_ = self.clone();
         let tx_transfer = move |req: &mut Request| -> IronResult<Response> {
             self_.process_transaction::<TxTransfer>(req)
         };
-        
+
         // Gets status of the wallet corresponding to the public key.
         let self_ = self.clone();
         let wallet_info = move |req: &mut Request| -> IronResult<Response> {
-            let wallet_key = req.extensions.get::<Router>()
-                                .expect("router::Params not in request extensions")
-                                .find("pub_key")
-                                .ok_or(ApiError::IncorrectRequest("Missing public key".into()))?;
+            let wallet_key = req.extensions
+                .get::<Router>()
+                .expect("router::Params not in request extensions")
+                .find("pub_key")
+                .ok_or(ApiError::IncorrectRequest("Missing public key".into()))?;
             let public_key = PublicKey::from_hex(wallet_key).map_err(ApiError::FromHex)?;
-            
+
             let wallet_view = self_.get_wallet_view(public_key);
-            let block = BlockWithState::new(self_.blockchain.snapshot(),
-                                               SERVICE_ID,
-                                               0,
-                                               wallet_view);
-            
+            let block =
+                BlockWithState::new(self_.blockchain.snapshot(), SERVICE_ID, 0, wallet_view);
+
             self_.ok_response(&serde_json::to_value(block).unwrap())
         };
 
@@ -312,7 +311,7 @@ impl Service for CurrencyService {
     fn service_id(&self) -> u16 {
         SERVICE_ID
     }
-    
+
     fn state_hash(&self, view: &Snapshot) -> Vec<Hash> {
         let schema = CurrencySchema::ro(view);
         schema.state_hash()
