@@ -1,32 +1,38 @@
 #!/bin/bash
 
-set -e
+INIT_DIR=$(pwd)
+WORK_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && cd .. && pwd )"
 
 # Exit status
 STATUS=0
 
+function build-server {
+    cd $WORK_DIR
+    cargo build
+    cd $INIT_DIR
+}
+
 # Launches the cryptocurrency demo and waits until it starts listening
 # on the TCP port 8000.
 function launch-server {
-    cd ..
-    cargo run &
-    CTR=0
-    MAXCTR=60
-    while [[ ( -z `netstat -tlp 2>/dev/null | awk '{ if ($4 == "*:8000") { split($7, pid, /\//); print pid[1] } }'` ) && ( $CTR -lt $MAXCTR ) ]]; do
-      sleep 1
-      CTR=$(( $CTR + 1 ))
+    cd $WORK_DIR
+    ./target/debug/cryptocurrency &
+    ATTEMPT=60
+    while ! fuser -s -n tcp 8000; do
+        sleep 1
+        ATTEMPT=$(( $ATTEMPT - 1 ))
+        if [[ $ATTEMPT == 0 ]]; then
+            echo "Failed to launch the server; aborting"
+            exit 1
+        fi
     done
-    if [[ $CTR == $MAXCTR ]]; then
-        echo "Failed to launch the server; aborting"
-        exit 1
-    fi
-    cd examples
+    cd $INIT_DIR
 }
 
 # Kills whatever program is listening on the TCP port 8000, on which the cryptocurrency
 # demo needs to bind to.
 function kill-server {
-    netstat -tlp 2>/dev/null | awk '{ if ($4 == "*:8000") { split($7, pid, /\//); print pid[1] } }' | xargs -r kill -KILL
+    fuser -s -k $1 -n tcp 8000
 }
 
 # Sends a transaction to the cryptocurrency demo.
@@ -102,47 +108,68 @@ function check-transfer-tx {
     fi
 }
 
-kill-server
-launch-server
+function full-test {
+    kill-server -i
+    build-server
+    launch-server
 
-echo "Creating a wallet for Johnny..."
-send-transaction create-wallet-1.json
-check-transaction 44c6c2c5
+    echo "Creating a wallet for Johnny..."
+    send-transaction create-wallet-1.json
+    check-transaction 44c6c2c5
 
-echo "Creating a wallet for Janie..."
-send-transaction create-wallet-2.json
-check-transaction 8714e906
+    echo "Creating a wallet for Janie..."
+    send-transaction create-wallet-2.json
+    check-transaction 8714e906
 
-echo "Transferring funds from Johnny to Janie"
-send-transaction transfer-funds.json
-check-transaction e63b28ca
+    echo "Transferring funds from Johnny to Janie"
+    send-transaction transfer-funds.json
+    check-transaction e63b28ca
 
-echo "Waiting until transactions are committed..."
-sleep 7
+    echo "Waiting until transactions are committed..."
+    sleep 7
 
-echo "Retrieving info on all wallets..."
-RESP=`curl http://127.0.0.1:8000/api/services/cryptocurrency/v1/wallets 2>/dev/null`
-# Wallet records in the response are deterministically ordered by increasing
-# public key. As Johnny's pubkey is lexicographically lesser than Janie's, it it possible to
-# determine his wallet as .[0] and hers as .[1].
-check-request "Johnny Doe" 90 "`echo $RESP | jq .[0]`"
-check-request "Janie Roe" 110 "`echo $RESP | jq .[1]`"
+    echo "Retrieving info on all wallets..."
+    RESP=`curl http://127.0.0.1:8000/api/services/cryptocurrency/v1/wallets 2>/dev/null`
+    # Wallet records in the response are deterministically ordered by increasing
+    # public key. As Johnny's pubkey is lexicographically lesser than Janie's, it it possible to
+    # determine his wallet as .[0] and hers as .[1].
+    check-request "Johnny Doe" 90 "`echo $RESP | jq .[0]`"
+    check-request "Janie Roe" 110 "`echo $RESP | jq .[1]`"
 
-echo "Retrieving info on Johnny's wallet..."
-RESP=`curl http://127.0.0.1:8000/api/services/cryptocurrency/v1/wallet/03e657ae71e51be60a45b4bd20bcf79ff52f0c037ae6da0540a0e0066132b472 2>/dev/null`
-check-request "Johnny Doe" 90 "$RESP"
+    echo "Retrieving info on Johnny's wallet..."
+    RESP=`curl http://127.0.0.1:8000/api/services/cryptocurrency/v1/wallet/03e657ae71e51be60a45b4bd20bcf79ff52f0c037ae6da0540a0e0066132b472 2>/dev/null`
+    check-request "Johnny Doe" 90 "$RESP"
 
-echo "Retrieving Johnny's transaction info..."
-TXID=44c6c2c58eaab71f8d627d75ca72f244289bc84586a7fb42186a676b2ec4626b
-RESP=`curl http://127.0.0.1:8000/api/system/v1/transactions/$TXID 2>/dev/null`
-EXP=`cat create-wallet-1.json`
-check-create-tx "Johnny Doe" "$EXP" "$RESP"
+    echo "Retrieving Johnny's transaction info..."
+    TXID=44c6c2c58eaab71f8d627d75ca72f244289bc84586a7fb42186a676b2ec4626b
+    RESP=`curl http://127.0.0.1:8000/api/system/v1/transactions/$TXID 2>/dev/null`
+    EXP=`cat create-wallet-1.json`
+    check-create-tx "Johnny Doe" "$EXP" "$RESP"
 
-echo "Retrieving transfer transaction info..."
-TXID=e63b28caa07adffb6e2453390a59509a1469e66698c75b4cfb2f0ae7a6887fdc
-RESP=`curl http://127.0.0.1:8000/api/system/v1/transactions/$TXID 2>/dev/null`
-EXP=`cat transfer-funds.json`
-check-transfer-tx "$EXP" "$RESP"
+    echo "Retrieving transfer transaction info..."
+    TXID=e63b28caa07adffb6e2453390a59509a1469e66698c75b4cfb2f0ae7a6887fdc
+    RESP=`curl http://127.0.0.1:8000/api/system/v1/transactions/$TXID 2>/dev/null`
+    EXP=`cat transfer-funds.json`
+    check-transfer-tx "$EXP" "$RESP"
 
-kill-server
-exit $STATUS
+    kill-server
+    exit $STATUS
+}
+
+case "$1" in
+    build-server)
+        build-server
+    ;;
+    launch-server)
+        launch-server
+    ;;
+    kill-server)
+        kill-server
+    ;;
+    --help)
+        echo "Use: launch-server|full-test"
+    ;;
+    *)
+        full-test
+    ;;
+esac
